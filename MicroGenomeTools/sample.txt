@@ -1,0 +1,7 @@
+# samindex(样本索引号)	name(样本名)	type(输入数据类型)	inputfile(输入数据)	ref(参考基因组)	config(配置文件)	filter(硬过滤)	clean(清除中间文件)
+# 样本索引号必须是数字
+# 输入数据类型只有两种，fastq or bam，且fastq只接受双端测序数据
+# 输入数据若是fastq，两个fastq文件之间请用“，”隔开
+# 文件和路径输入均须是绝对路径
+# filter和clean是可选项，不进行则不填该项，若需要则在最后填入filter或是clean，与填入顺序无关
+12	ERR1462584	fastq	/home/constantine-hmc/CH/lzc/try/1.fastq,/home/constantine-hmc/CH/lzc/try/2.fastq	/home/constantine-hmc/CH/lzc/try/ref/H37Rv.fasta	/home/constantine-hmc/CH/lzc/my.config	filter	clean

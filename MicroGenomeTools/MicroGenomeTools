@@ -1,0 +1,237 @@
+#!/root/python/python-3.7.13/python-3.7.13/bin/python3.7
+"""MicroGenomeTools"""
+
+"""
+authors:
+Zhuochong Liu, Flavius Constantine, Motochika Hata
+
+version:
+test.0.0.1
+
+description:
+    This is MicroGenomeTools, a python module for generating shell script of different common analysis
+workflow with pre-set tools and pipeline, including variant caling (SNP and InDel), structural variant
+detection, genome assembly and annotation, and so on. In addition, MicroGenomeTools provides a module 
+to create your own workflow.
+    Thanks for using MicroGenomeTools and wish you all the best.
+"""
+
+import sys
+import os
+sys.path.append(sys.path[0])
+import MGT
+import MGT_MultiTools
+
+function_list = ['VariantCalling', 'FeatureCounts', 'Multitools', 'Information']
+"""Aruguments"""
+### Aruguments information of VariantCalling
+VariantCalling_arg = {'inputtype':['require','str'], 'inputfile':['require','str'], 'reference':['require','str'],
+                      'config':['require','str'], 'prefix':['require','str'], 'samindex':['optional','str'],
+                      'outdir':['require','str'], 'threads':['optional','str'],
+                      'cleanDir':['optional','bool'], 'fastp':['optional','bool'], 'fastqc':['optional','bool'],
+                      'sort':['optional','bool'], 'markdup':['optional','bool']}
+### Aruguments information of VariantCalling
+FeatureCounts_arg = {'inputtype':['require','str'], 'inputfile':['require','str'], 'reference':['require','str'],
+                     'config':['require','str'], 'prefix':['require','str'], 'samindex':['optional','str'],
+                     'STARindex':['require','str'], 'GTF':['require','str'],
+                     'outdir':['require','str'], 'threads':['optional','str'],
+                     'cleanDir':['optional','bool'], 'fastp':['optional','bool'], 'fastqc':['optional','bool'],
+                     'FQtype':['optional','str'], 'BAMtype':['optional','str'],
+                     'sort':['optional','bool'], 'markdup':['optional','bool']}
+"""Hlep"""
+### Help information of MicroGenomeTools
+MicroGenomeTools_help = 'Create shell script with preset pipeline and softwares for single sample or multi samples \n' \
+                        'Usage: MicroGenomeTools [FUNCTION_MODULE] [OPTIONS]\n' \
+                        'Single sample tools:\n' \
+                        '    VariantCalling     use GATK to perform variantcalling for WGS data\n' \
+                        '    FeatureCounts      use STAR and featureCounts to count reads mapped to transcript for WTS data\n' \
+                        'Multi sample tools:\n' \
+                        'Information options:\n' \
+                        '    Information        show the information of version and authors'
+
+### Help information of VariantCalling
+VariantCalling_help = 'Create VariantCalling pipeline shell script for single sample\n' \
+                      'Usage: MicroGenomeTools VariantCalling [OPTIONS]\n' \
+                      'Required parameters:\n' \
+                      '    --inputfile   aligned BAM file or pair-end fastq file with "," as separator\n' \
+                      '    --inputtype   type of inputfile, "bam" or "fastq"\n' \
+                      '    --reference   reference genome file with bwa2 index and samtools faidx, build steps are added automatically when index and faidx are missing\n' \
+                      '    --config      config file with parameters for softwares\n' \
+                      '    --prefix      prefix output name\n' \
+                      '    --outdir      path of output dir\n' \
+                      'Optional parameters:\n' \
+                      '    --samindex    index number of sample, Default = 1\n' \
+                      '    --threads     number of cores to use, Minimum = 4, Default = 4\n' \
+                      '    --fastp       filter input fastq file with fastp, input type should be "fastq", Default = False\n' \
+                      '    --fastqc      quality control for fastq file with fastqc, input type should be "fastq", Default = False\n' \
+                      '    --sort        sort input BAM file with samtools, input type should be "BAM", Default = False\n' \
+                      '    --markdup     markduplicates in input BAM file with sambamba, input type should be "BAM", Default = False\n' \
+                      '    --cleanDir    clean existed files in outdir, Default = False'
+
+### Help information of FeatureCounts
+FeatureCounts_help = 'Create FeatureCounts pipeline shell script for single sample\n' \
+                     'Usage: MicroGenomeTools FeatureCounts [OPTIONS]\n' \
+                     'Required parameters:\n' \
+                     '    --inputfile   aligned BAM file or pair-end fastq file with "," as separator\n' \
+                     '    --inputtype   type of inputfile, "bam" or "fastq"\n' \
+                     '    --reference   reference genome fasta file with bwa2 index and samtools faidx, build steps are added automatically when index and faidx are missing\n'\
+                     '    --STARindex   index file of reference genome fasta created by STAR, build step is added automatically when STAR index is missing\n'\
+                     '    --GTF         GTF file of reference genome fasta, must corresponding to STAR index file\n' \
+                     '    --config      config file with parameters for softwares\n' \
+                     '    --prefix      prefix output name\n' \
+                     '    --outdir      path of output dir\n' \
+                     'Optional parameters:\n' \
+                     '    --FQtype      fastq file type, "treated" or "untreated", the type will determine the step from which fastq file is led to workflow; "treated" means that PCR duplicates in fastq file have been strictly removed, Default = "untreated"\n' \
+                     '    --BAMtype     BAM file type, "bwa" or "star", the type will determine the step from which BAM file is led to workflow; "bwa" means that BAM file are produced by "bwa mem" or similar aligner, "star" means that BAM file are produced by "STAR" or similar aligner specifically for the RNA-seq, Default = "bwa"\n' \
+                     '    --samindex    index number of sample, Default = 1\n' \
+                     '    --threads     number of cores to use, Minimum = 4, Default = 4\n' \
+                     '    --fastp       filter input fastq file with fastp, input type should be "fastq", Default = False\n' \
+                     '    --fastqc      quality control for fastq file with fastqc, input type should be "fastq" or BAMtype is "bwa" (BAM file generated by "bwa" will be restored to fastq file after remove PCR duplicates, so it is available when "BAMtype" is "bwa"), Default = False\n' \
+                     '    --sort        sort input BAM file with samtools, input type should be "BAM", Default = False\n' \
+                     '    --markdup     markduplicates in input BAM file with sambamba, input type should be "BAM", Default = False\n' \
+                     '    --cleanDir    clean existed files in outdir, Default = False'
+
+function_help = {'MGT':MicroGenomeTools_help,'VariantCalling': VariantCalling_help, 'FeatureCounts': FeatureCounts_help}
+
+# Information
+Information = 'Version: test.0.0.1\n' \
+              'Authors: Zhuochong Liu, Flavius Constantine, Motochika Hata'
+
+# Customized error type
+class ArgumentConflictError(Exception):
+    pass
+
+def main(args):
+    if len(args) == 0:
+        print(function_help['MGT'])
+        sys.exit()
+    elif len(args) == 1:
+        if args[0] in function_list and args[0] != 'Information':
+            print(function_help[args[0]])
+            sys.exit()
+        elif args[0] == 'Information':
+            print(Information)
+            sys.exit()
+        else:
+            raise TypeError('Wrong function module: %s' % (args[0]))
+    elif len(args) > 1:
+        if args[0] == 'VariantCalling':
+            arg_val = getValueForArgument(VariantCalling_arg, args[1:])
+            inputtype, inputfile, ref = arg_val['inputtype'], arg_val['inputfile'], arg_val['reference']
+            outdir, name, samindex = arg_val['outdir'], arg_val['prefix'], arg_val['samindex']
+            myconf = MGT.read_conf(arg_val['config'])
+            threads, cleanDir, fp_TF, fqc_tf, sort_tf, markdup_tf = '4', False, False, False, False, False
+            if 'threads' in arg_val.keys():
+                threads = str(arg_val['threads'])
+            if 'cleanDir' in arg_val.keys():
+                cleanDir = True
+            if 'fastp' in arg_val.keys():
+                fp_TF = True
+                if inputtype == 'bam':
+                    print('\033[31mArgumentConflictError: Conflicting parameters: fastp, inputtype\33[0m')
+                    raise ArgumentConflictError(sys.exit())
+            if 'fastqc' in arg_val.keys():
+                fqc_tf = True
+                if inputtype == 'bam':
+                    print('\033[31mArgumentConflictError: Conflicting parameters: fastqc, inputtype\33[0m')
+                    raise ArgumentConflictError(sys.exit())
+            if 'sort' in arg_val.keys():
+                sort_tf = True
+                if inputtype == 'fastq':
+                    print('\033[31mArgumentConflictError: Conflicting parameters: sort, inputtype\33[0m')
+                    raise ArgumentConflictError(sys.exit())
+            if 'markdup' in arg_val.keys():
+                markdup_tf = True
+                if inputtype == 'fastq':
+                    print('\033[31mArgumentConflictError: Conflicting parameters: markdup, inputtype\33[0m')
+                    raise ArgumentConflictError(sys.exit())
+            MGT.variantcalling(inputtype, inputfile, ref, myconf, name, samindex, outdir, threads=threads,
+                               cleanDir=cleanDir, fp_TF=fp_TF, fqc_TF=fqc_tf, sort_tf=sort_tf, markdup_tf=markdup_tf)
+        elif args[0] == 'FeatureCounts':
+            arg_val = getValueForArgument(FeatureCounts_arg, args[1:])
+            star_index, gtf = arg_val['STARindex'], arg_val['GTF']
+            inputtype, inputfile, ref = arg_val['inputtype'], arg_val['inputfile'], arg_val['reference']
+            outdir, name, samindex = arg_val['outdir'], arg_val['prefix'], arg_val['samindex']
+            myconf = MGT.read_conf(arg_val['config'])
+            threads, cleanDir, fp_TF, fqc_tf, sort_tf, markdup_tf = '4', False, False, False, False, False
+            FQtype, BAMtype = 'untreated', 'bwa'
+            if 'threads' in arg_val.keys():
+                threads = str(arg_val['threads'])
+            if 'FQtype' in arg_val.keys():
+                FQtype = str(arg_val['FQtype'])
+                if inputtype == 'bam':
+                    print('\033[31mArgumentConflictError: Conflicting parameters: FQtype, inputtype\33[0m')
+                    raise ArgumentConflictError(sys.exit())
+            if 'BAMtype' in arg_val.keys():
+                BAMtype = str(arg_val['BAMtype'])
+                if inputtype == 'fastq':
+                    print('\033[31mArgumentConflictError: Conflicting parameters: BAMtype, inputtype\33[0m')
+                    raise ArgumentConflictError(sys.exit())
+            if 'cleanDir' in arg_val.keys():
+                cleanDir = True
+            if 'fastp' in arg_val.keys():
+                fp_TF = True
+                if inputtype == 'bam':
+                    print('\033[31mArgumentConflictError: Conflicting parameters: fastp, inputtype\33[0m')
+                    raise ArgumentConflictError(sys.exit())
+            if 'fastqc' in arg_val.keys():
+                fqc_tf = True
+                if inputtype == 'bam' and BAMtype == 'star':
+                    print('\033[31mArgumentConflictError: Conflicting parameters: fastqc, BAMtype\33[0m')
+                    raise ArgumentConflictError(sys.exit())
+            if 'sort' in arg_val.keys():
+                sort_tf = True
+                if inputtype == 'fastq':
+                    print('\033[31mArgumentConflictError: Conflicting parameters: sort, inputtype\33[0m')
+                    raise ArgumentConflictError(sys.exit())
+            if 'markdup' in arg_val.keys():
+                markdup_tf = True
+                if inputtype == 'fastq':
+                    print('\033[31mArgumentConflictError: Conflicting parameters: markdup, inputtype\33[0m')
+                    raise ArgumentConflictError(sys.exit())
+            MGT.FeatureCounts(inputtype, inputfile, ref, myconf, star_index, gtf, name, samindex, outdir,
+                              threads=threads, cleanDir=cleanDir, fp_TF=fp_TF, fqc_TF=fqc_tf,
+                              FQtype=FQtype, BAMtype=BAMtype, sort_tf=sort_tf, markdup_tf=markdup_tf)
+        # elif args == 'MultiVariantCalling':
+
+
+# Customized error type
+class ArgumentValueError(Exception):
+    pass
+class ArgumentExistError(Exception):
+    pass
+class ArgumentNumberError(Exception):
+    pass
+
+def getValueForArgument(function_arg, args):
+    arg_val={}
+    for arg in args:
+        if arg.startswith('--'):
+            arg = arg.strip('--')
+            if (arg in function_arg.keys()) == True:
+                arg_inf = function_arg[arg]
+                if arg_inf[1] == 'str':
+                    try:
+                        val = args[args.index('--'+arg)+1]
+                    except IndexError:
+                        print('\033[31mArgumentValueError: No values for parameter: %s\33[0m' % (arg))
+                        raise ArgumentValueError(sys.exit())
+                    if val.startswith('--'):
+                        print('\033[31mArgumentValueError: No values for parameter: %s\33[0m' % (arg))
+                        raise ArgumentValueError(sys.exit())
+                    arg_val[arg] = val
+                if arg_inf[1] == 'bool':
+                    arg_val[arg] = 'TF'
+            elif (arg in function_arg.keys()) == False:
+                print('\033[31mArgumentExistError: Parameter not exist: %s\33[0m' % (arg))
+                raise ArgumentExistError(sys.exit())
+    require_args = [x for x in list(function_arg.keys()) if (function_arg[x])[0] == 'require']
+    require_check = False if any(True for i in require_args if not i in list(arg_val.keys())) else True
+    no_arg_require = [x for x in require_args if not x in list(arg_val.keys())]
+    if require_check == False:
+        print('\033[31mArgumentNumberError: Missing necessary required parameter values: %s\33[0m' % (str(no_arg_require)))
+        raise ArgumentNumberError(sys.exit())
+    return arg_val
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

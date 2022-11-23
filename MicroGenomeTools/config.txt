@@ -1,0 +1,44 @@
+### path of softwares（可调用路径）
+[software]
+samtools = samtools
+bwa2 = bwa-mem2
+sambamba = sambamba
+gatk = gatk
+fastqc = fastqc
+fastp = fastp
+STAR = STAR
+featureCounts = featureCounts
+
+### java-options
+[java-options]
+memory = 8
+
+### bwa-mem2 mem
+[map]
+
+### map_STAR
+[map_STAR]
+
+### samtools sort
+[sort]
+
+### sambamba markdup
+[markdup]
+r = s: TF
+
+### GATK HaplotypeCaller
+[call]
+
+
+### fastp
+[fastp]
+detect_adapter_for_pe = a: TF
+D = s: TF
+c = s: TF
+
+### featureCounts
+[featureCounts]
+p = s: TF
+g = s: Name
+t = s: gene
+M = s: TF
