@@ -1,0 +1,196 @@
+#!/usr/bin/python
+import os
+import sys
+import copy
+import linecache
+from optparse import OptionParser
+######################################################
+## 选项和参数
+######################################################
+## 全局变量，脚本目录
+src_dir = os.path.split(os.path.realpath(__file__))[0]
+## 用法
+usage = "usage: %prog [options] FASTQ1 FASTQ2\n" \
+        "The extracted barcode sequence will be filled by A if barcode length less than 18" \
+        "\nBarcode sequence will be removed from sequencing reads (the maximum coverage of the input position orders of barcode and anchor)"
+## 版本
+parser = OptionParser(usage=usage, version="BarcodeSplitTools test_version:0.0.1")
+## 个性化选项
+parser.add_option('-m', '--module', default=None, type="string", action="store", dest="module", metavar='string',
+                    help='Required, sequence of "Barcode Module", use "N" for variable region, for example, "NNNNNNNNNNNNGTGACTGATGAANNNNNNCGTAGTTGCAAANNNNNN", deafult = None')
+parser.add_option('-c', '--cigar', default=None, type="string", action="store", dest='cigar', metavar='string',
+                    help='Required, cigar string of "Barcode Module", use "N" variable region and "T" for fixed anchoring technical sequence, for example "6B6B12T6B12T6B", deafult = None')
+parser.add_option('-b', '--barcode', default=None, type="string", action="store", dest='barcode', metavar='string',
+                    help='Required, the position orders of barcode sequence in "ModuleCigar", for example "2,4,6", default = None')
+parser.add_option('-s', '--search', default='False', type="string", action="store", dest='search', metavar='boolean',
+                    help='Optional, to determine the position of barcode by fixed anchoring technical sequence, enter "True" or "False", default = False')
+parser.add_option('-a', '--anchor', default=None, type="string", action="store", dest='anchor', metavar='string',
+                    help='Optional but requierd when "search" if used, should be used with "-s", the position orders of anchoring technical sequence in "Barcode Module", for example "3,5", default = None')
+parser.add_option('-f', '--fold', default=0.95, type="float", action="store", dest='fold', metavar='float',
+                    help='Optional, should be used with "-s", fold of presupposed search range for fixed anchoring technical sequence, deafult = 1.25')
+parser.add_option('-t', '--threshold_anchor', default=0.95, type="float", action="store", dest='threshold_anchor', metavar='float',
+                    help='Optional, should be used with "-s", alignment threshold of fixed anchoring technical sequence, deafult = 0.95')
+parser.add_option('-x', '--CD-HIT', default=None, type="string", action="store", dest='cdhit', metavar='path',
+                    help='Required, The path of cd-hit-est, deafult = None')
+parser.add_option('-r', '--RAM', default=800, type="int", action="store", dest='RAM', metavar='integer',
+                    help='Optional, random access memory for CD-HIT, deafult = 800(M)')
+parser.add_option('-p', '--threads', default=1, type="int", action="store", dest='threads', metavar='integer',
+                    help='Optional, Number of threads to use for CD-HIT, deafult = 1')
+parser.add_option('-l', '--threshold_cluster', default=0.95, type="float", action="store", dest='threshold_cluster', metavar='float',
+                    help='Optional, alignment threshold of clustering barcode sequence, Please calculate according to the allowable mismatch number, deafult = 0.95')
+parser.add_option('-o', '--outputdir', default=None, type="string", action="store", dest='outputdir', metavar='path',
+                    help='Required, absolute path of outputdir, only reads name and barcode, deafult = None')
+parser.add_option('-n', '--name', default=None, type="string", action="store", dest='name', metavar='string',
+                    help='Required, prefix name of output files, deafult = None')
+## 解析输入的选项
+(options, args) = parser.parse_args()
+module_seq = options.module
+module_cigar = options.cigar
+search_tf = options.search
+threshold_anchor = options.threshold_anchor
+range_fold = options.fold
+barcode_position = options.barcode
+anchor_position = options.anchor
+cdhit = options.cdhit
+RAM = options.RAM
+threads = options.threads
+threshold_cluster = options.threshold_cluster
+outdir = options.outputdir
+name = options.name
+#########################################################
+## 检查部分选项的输入
+#########################################################
+## 检查是否使用锚定序列
+if not search_tf in ['True', 'False']:
+    print('Wrong boolean of "search", please specify "True" of "False"!')
+    sys.exit()
+else:
+    search_tf = True if search_tf == "True" else False
+## 检查使用锚定序列时所需要的其他输入
+if search_tf == True:
+    if anchor_position == None:
+        print('Please specify the position orders of anchoring technical sequence in "Barcode Module"!')
+        sys.exit()
+#########################################################
+## 检查输入的FASTQ文件
+#########################################################
+if not len(args) == 2:
+    print('Wrong number of fastq file, pair-end fastq file is required')
+    sys.exit()
+fq1, fq2 = args[0], args[1]
+if not os.path.isfile(fq1) or not os.path.isfile(fq2):
+    print('None exist iput FASTQ files!')
+    sys.exit()
+#########################################################
+## 被调用的其余脚本
+#########################################################
+BarcodeCluster = os.path.join(src_dir, 'BarcodeCluster.py')
+ExtractBarcode = os.path.join(src_dir, 'ExtractBarcode.py')
+############################################################
+## 函数定义
+############################################################
+## 读入记录barcode的fasta文件
+def BarcoeFastaReadIn(barcode_faa, direction):
+    tag_barcode = {}
+    with open(barcode_faa, 'r') as in_faa:
+        for line in in_faa:
+            if line.strip().startswith('>'):
+                tag = line.strip().strip('>')
+                barcode = in_faa.readline().strip()
+                tag_barcode[tag+'_bc_'+direction] = barcode
+    return tag_barcode
+## 双端测序数据barcode合并去重复
+def BarcoeFastaRedup(barcode_faa1, barcode_faa2):
+    tag_barcode1 = BarcoeFastaReadIn(barcode_faa1, '1')
+    tag_barcode2 = BarcoeFastaReadIn(barcode_faa2, '2')
+    tag_barcode = copy.deepcopy(tag_barcode1)
+    tag_barcode.update(tag_barcode2)
+    return tag_barcode
+## 读取FASTQ文件
+def FastqReadIn(fastq):
+    txt_len = len(open(fastq, 'r').readlines())
+    fastq_read, n = {}, 1
+    while n < txt_len:
+        if linecache.getline(fastq, n).strip().startswith('@') and linecache.getline(fastq, n+2).strip().startswith('+'):
+            seq_tag = linecache.getline(fastq, n).strip().strip('@').split(' ')[0]
+            seq = linecache.getline(fastq, n + 1).strip()
+            qual = linecache.getline(fastq, n + 3).strip()
+            fastq_read[seq_tag] = [seq, qual]
+        n += 1
+    return fastq_read
+############################################################
+## 工作流程
+############################################################
+## 双端测序数据提取barcode的结果文件夹
+fq_dir1 = os.path.join(outdir,name + '_1')
+if not os.path.isdir(fq_dir1):
+    os.mkdir(fq_dir1)
+fq_dir2 = os.path.join(outdir,name + '_2')
+if not os.path.isdir(fq_dir2):
+    os.mkdir(fq_dir2)
+## 提取双端测序数据的barcode
+# if search == True:
+#     os.system('python3 %s -m %s -c %s -b %s -s Ture -a %s -f %s -t %s -o %s -n %s %s' %  (ExtractBarcode, module_seq, module_cigar, barcode_position, anchor_position, range_fold, threshold_anchor, fq_dir1, name+'_1', fq1))
+#     os.system('python3 %s -m %s -c %s -b %s -s Ture -a %s -f %s -t %s -o %s -n %s %s' %  (ExtractBarcode, module_seq, module_cigar, barcode_position, anchor_position, range_fold, threshold_anchor, fq_dir2, name+'_2', fq2))
+# else:
+#     os.system('python3 %s -m %s -c %s -b %s -o %s -n %s %s' %  (ExtractBarcode, module_seq, module_cigar, barcode_position, fq_dir1, name+'_1', fq1))
+#     os.system('python3 %s -m %s -c %s -b %s -o %s -n %s %s' %  (ExtractBarcode, module_seq, module_cigar, barcode_position, fq_dir2, name+'_2', fq2))
+barcode_fq1 = os.path.join(fq_dir1, name+'_1' + '.RemoveBarcode.fastq')
+barcode_faa1 = os.path.join(fq_dir1, name+'_1' + '.Barcode.fasta')
+barcode_fq2 = os.path.join(fq_dir2, name+'_2' + '.RemoveBarcode.fastq')
+barcode_faa2 = os.path.join(fq_dir2, name+'_2' + '.Barcode.fasta')
+## 合并双端测序数据提取的barcode
+tag_barcode = BarcoeFastaRedup(barcode_faa1, barcode_faa2)
+PE_barcode_faa = os.path.join(outdir, name+'.PE.Barcode.fasta')
+with open(PE_barcode_faa, 'w') as out1:
+    for tag,barcode in tag_barcode.items():
+        out1.write('>%s\n%s\n' % (tag, barcode))
+## 用CD-HIT对barcode进行分类，确定细胞数目
+os.system('python3 %s -c %s -r %s -p %s -t %s -o %s -n %s %s' % (BarcodeCluster, cdhit, RAM, threads, threshold_cluster, outdir, name, PE_barcode_faa))
+cell_reads_txt = os.path.join(outdir, name+'.cells_reads.txt')
+cells_reads = {}
+## 输出文本文件，每个细胞包含的reads（pair）
+with open(cell_reads_txt, 'r') as in1:
+    for line in in1:
+        ll = line.strip().split('\t')
+        cell, reads = ll[0], ll[1:]
+        cells_reads[cell] = reads
+## 读取原始fastq，以及处理过barcode之后的fastq
+row_fastq1_read = FastqReadIn(fq1)
+row_fastq2_read = FastqReadIn(fq2)
+barcode_fastq1_read = FastqReadIn(barcode_fq1)
+barcode_fastq2_read = FastqReadIn(barcode_fq2)
+## 拆库后的fastq指定的输出文件夹
+fq_dir = os.path.join(outdir, 'cell_fastq')
+if not os.path.isdir(fq_dir):
+    os.mkdir(fq_dir)
+## 拆库
+for cell,reads in cells_reads.items():
+    ## 为每个细胞创建文件夹
+    cell_dir = os.path.join(fq_dir, cell)
+    if not os.path.isdir(cell_dir):
+        os.mkdir(cell_dir)
+    ## 每个细胞的双端fastq
+    cell_fq1 = open(os.path.join(cell_dir, '1.fastq'), 'w')
+    cell_fq2 = open(os.path.join(cell_dir, '2.fastq'), 'w')
+    ## 配对reads-pair
+    read_pair = {}
+    for tag_source in reads:
+        tag = tag_source.strip().split('_bc_')[0]
+        source = tag_source.strip().split('_bc_')[1]
+        ## 检查是否已经输出了该reads-pair
+        if not tag in read_pair.keys():
+            read_pair[tag] = 'IN'
+            ## 检查barcode的read来源，并在另一端的的测序数据中寻找是否有配对的reads
+            if source == '1':
+                cell_fq1.write('@%s\n%s\n+\n%s\n' % (tag, barcode_fastq1_read[tag][0], barcode_fastq1_read[tag][1]))
+                if tag in barcode_fastq2_read.keys():
+                    cell_fq2.write('@%s\n%s\n+\n%s\n' % (tag, barcode_fastq2_read[tag][0], barcode_fastq2_read[tag][1]))
+                elif not tag in barcode_fastq2_read.keys() and tag in row_fastq2_read.keys():
+                    cell_fq2.write('@%s\n%s\n+\n%s\n' % (tag, row_fastq2_read[tag][0], row_fastq2_read[tag][1]))
+            elif source == '2':
+                cell_fq2.write('@%s\n%s\n+\n%s\n' % (tag, barcode_fastq2_read[tag][0], barcode_fastq2_read[tag][1]))
+                if tag in barcode_fastq1_read.keys():
+                    cell_fq1.write('@%s\n%s\n+\n%s\n' % (tag, barcode_fastq1_read[tag][0], barcode_fastq1_read[tag][1]))
+                elif not tag in barcode_fastq1_read.keys() and tag in row_fastq1_read.keys():
+                    cell_fq1.write('@%s\n%s\n+\n%s\n' % (tag, row_fastq1_read[tag][0], row_fastq1_read[tag][1]))
