@@ -1,0 +1,250 @@
+#!/usr/bin/python3
+import re
+import os
+import sys
+import time
+import linecache
+from fuzzywuzzy import fuzz
+from optparse import OptionParser
+######################################################
+## 选项和参数
+######################################################
+## 用法
+print('\033[1;31;44mBarcodeExtract\033[0m\n'
+      'version: test_0.0.1\nAuthor: Zhuochong Liu\n'
+      'Description: Used to search reads with barcode and UMI in FASTQ file from microSPLiT.\n')
+usage = "Usage: %prog [options] FASTQ BARCODE_TEXT\n" \
+            "Result files:\n" \
+        "    *.Barcode_UMI.fastq            UMI and barcode sequqnces of Barcoded reads in fastq format.\n" \
+        "    *.Reads.Barcoded.txt           Tags of barcoded reads.\n" \
+        "    *.Reads.NonBarcoded.txt        Tags of unbarcoded reads.\n" \
+        "    *.summary.txt                  Summary text file.\n"
+## 版本
+parser = OptionParser(usage=usage)
+## 个性化选项
+parser.add_option('-s', default=None, type="string", action="store", dest="seq", metavar='string',
+                    help='Required, sequence of "Barcode Module", use "N" for variable region(UMI and barcode), for example, "NNNNNNNNNNNNNNGGTCCTTGGCTTCGCNNNNNNNCCTCCTACGCCAGANNNNNNN", deafult = None.')
+parser.add_option('-c', default=None, type="string", action="store", dest='cigar', metavar='string',
+                    help='Required, cigar string of "Barcode Module", use "U" for UMI sequence, "B" for barcode sequence and "T" for anchor sequence, for example "7U7B15T7B14T7B", deafult = None.')
+parser.add_option('-f', default=1.5, type="float", action="store", dest='fold', metavar='float',
+                    help='Optional, fold of range in searching anchor sequence, deafult = 1.5.')
+parser.add_option('-a', default=None, type="string", action="store", dest='anchor_mismatch', metavar='string',
+                    help='Optional, allowed mismatches of every anchor sequence, for example "1,1", default = "1" for every anchor sequence.')
+parser.add_option('-b', default=None, type="string", action="store", dest='barcode_mismatch', metavar='string',
+                    help='Optional, allowed mismatches of every barcode sequence, for example "1,1,1", default = "1" for every barcode sequence.')
+parser.add_option('-i', default='1', type="int", action="store", dest='Nnumber', metavar='int',
+                    help='Optional, allowed number of ambiguous base(for example "N") in UMI and barcode sequence, default = 1.')
+parser.add_option('-o', default=None, type="string", action="store", dest='outputdir', metavar='path',
+                    help='Required, absolute path of output directory, deafult = None.')
+parser.add_option('-n', default=None, type="string", action="store", dest='name', metavar='string',
+                    help='Required, prefix name of output files, deafult = None.')
+## 解析输入的选项
+(options, args) = parser.parse_args()
+module_seq = options.seq
+module_cigar = options.cigar
+range_fold = float(options.fold)
+anchor_mismatch =  options.anchor_mismatch
+barcode_mismatch =  options.barcode_mismatch
+Nnumber = int(options.Nnumber)
+outdir = os.path.abspath(options.outputdir)
+name = options.name
+#########################################################
+## 检查输入的输入文件
+#########################################################
+if not len(args) == 2:
+    print('Wrong number of input file, 1 fastq and 1 text with presupposed barcodes are allowed!')
+    sys.exit()
+fastq, barcode_txt = os.path.abspath(args[0]), os.path.abspath(args[1])
+if not (os.path.isfile(fastq) and os.path.isfile(barcode_txt)):
+    print('The input file does not exist!')
+    sys.exit()
+#########################################################
+## 检查输出路径
+#########################################################
+if not os.path.isdir(outdir):
+    print('The output directory does not exist!')
+    sys.exit()
+#########################################################
+## 函数定义
+#########################################################
+## 读取模板序列的cigar
+def ModuleSeqSplit(module_cigar:str, module_seq:str):
+    ## 读取cigar中的序列类型
+    subseq_type = [x for x in re.split(r'\d+', module_cigar)[1:]]
+    ## 读取cigar中的序列长度
+    subseq_len = [int(x) for x in re.split(r'[a-zA-Z]', module_cigar)[0:-1]]
+    ## 计算每一段序列的起点位置
+    accumulated_len = [sum(subseq_len[0:x]) for x in list(range(0,len(subseq_len)))]
+    ## 读取每一段序列
+    subseq = [module_seq[accumulated_len[x]:accumulated_len[x]+subseq_len[x]] for x in list(range(0, len(subseq_type)))]
+    ## 合并每段序列的多个信息
+    module_split = [list(x) for x in zip(subseq_type, accumulated_len, subseq_len, subseq)]
+    return module_split
+## 序列转化kmer
+def SeqToKmers(seq:str, kmer_len:int):
+    kmers = []
+    for x in list(range(0,len(seq)-kmer_len+1)):
+        kmers.append(seq[x:x+kmer_len])
+    return kmers
+## 检查序列是否有过多不清楚的碱基
+def ErrorBaseCount(seq, Nnumber):
+    error_count = 0
+    for base in seq:
+        if not base in ['A', 'T', 'C', 'G']:
+            error_count += 1
+    seq_qc = False if error_count > Nnumber else True
+    return seq_qc
+## 读取预设的Barcode列表
+def BarcodePrefix(barcode_txt:str, barcode_number:int):
+    barcode_prefix = {}
+    for n in list(range(1, barcode_number+1)):
+        barcode_prefix[n] = linecache.getline(barcode_txt, n).strip().split('\t')
+    return barcode_prefix
+## 检查每barcode是否在预设的barcode列表中
+def BarcodeCheck(barcode_seq:str, barcode_list:list, mismatch_number:int):
+    max_ar = 0
+    for prefix_barcode in barcode_list:
+        ar = fuzz.ratio(prefix_barcode, barcode_seq)## ar: align ratio
+        max_ar = ar if ar >= max_ar else max_ar
+    barcode_check = True if max_ar >= ((len(barcode_seq)-mismatch_number)/len(barcode_seq))*100 else False
+    return barcode_check
+## 使用锚定技术序列锚定的情况下提取Barcode
+def BarcodeExtractAnchor(seq:str, qual:str, module_split:list, barcode_prefix:dict, anchor_mismatch:str=None, barcode_mismatch:str=None, range_fold:float=2, Nnumber:int=1):
+    ## anchor, barcode和UMI的list
+    anchor_list = [x for x in module_split if x[0] == 'T']
+    barcode_list = [x for x in module_split if x[0] == 'B']
+    umi_list = [x for x in module_split if x[0] == 'U']
+    ## 每段anchor允许错配的碱基数
+    anchor_mismatch_number = [1] * len(anchor_list)
+    if not anchor_mismatch == None:
+        anchor_mismatch_number = anchor_mismatch.split(',')
+        try:
+            anchor_mismatch_number = [int(x) for x in anchor_mismatch_number]
+        except:
+            print('\033[1;31mWrong input of allowed mismatches of anchor sequence\33[0m')
+            sys.exit()
+    ## 每段barcode允许错配的碱基数
+    barcode_mismatch_number = [1] * len(barcode_list)
+    if not barcode_mismatch == None:
+        barcode_mismatch_number = barcode_mismatch.split(',')
+        try:
+            barcode_mismatch_number = [int(x) for x in barcode_mismatch_number]
+        except:
+            print('\033[1;31mWrong input of allowed mismatches of barcode sequence\33[0m')
+            sys.exit()
+    ## 字典，录入所有锚定技术序列的锚定位置
+    tech_anchor_position = {}
+    ## 循环，寻找所有锚定序列的锚定位置
+    n = 0
+    for anchor in  anchor_list:
+        ## 字典，录入在搜索锚定序列的范围内，当前锚定序列的可能锚定位置
+        align_positions = {}
+        ## 根据预设的range_fold确定搜索锚定技术序列的的范围
+        search_range = [max(0, int(anchor[1] - anchor[2] * range_fold)), min(len(seq), int(anchor[1] + anchor[2] + anchor[2] * range_fold))]
+        ## 搜索范围的序列打断为kmer
+        kmers = SeqToKmers(seq[search_range[0]:search_range[1] + 1], anchor[2])
+        ## 搜索锚定序列的锚定位置
+        for pos_index,kmer in enumerate(kmers):
+            threshold = (anchor[2] - anchor_mismatch_number[n])/anchor[2]
+            align_ratio = fuzz.ratio(kmer, anchor[3])
+            if align_ratio >= threshold * 100:
+                align_position = pos_index + search_range[0] - anchor[1]
+                align_positions[align_position] = align_positions[align_position] + align_ratio if align_position in align_positions.keys() else align_ratio
+        ## 确认锚定序列的锚定位置
+        exact_align_position = sorted(align_positions.items(), key=lambda x: x[1], reverse=True)[0][0] if not align_positions == {} else None
+        tech_anchor_position[n] = exact_align_position
+        n += 1
+    ## 确认多个锚定技术序列是否使read整体具有相同的比对位置
+    if len(list(set(list(tech_anchor_position.values())))) == 1 and not None in tech_anchor_position.values():
+        exact_anchor_position = list(tech_anchor_position.values())[0]
+        aligned_seq = seq[exact_anchor_position:] if exact_anchor_position >=0 else 'N'*abs(exact_anchor_position)+seq
+        aligned_qual = qual[exact_anchor_position:] if exact_anchor_position >=0 else 'D'*abs(exact_anchor_position)+qual
+        aligned_seq += 'N'*(module_split[-1][1] + module_split[-1][2])
+        aligned_qual += 'D'*(module_split[-1][1] + module_split[-1][2])
+        ## 获取多个barcode区域序列并组合在一起
+        barcode_seq, umi_seq = '', ''
+        barcode_qual, umi_qual = '', ''
+        ## 对umi和barcode进行质控的变量
+        umi_qc, barcode_qc = True, True
+        ## 搜索umi并进行质控
+        for umi in umi_list:
+            umi_seq += aligned_seq[umi[1]: umi[1] + umi[2]]
+            umi_qual += aligned_qual[umi[1]: umi[1] + umi[2]]
+            ## 检查umi是否过多不清楚碱基
+            seq_qc = ErrorBaseCount(aligned_seq[umi[1]: umi[1] + umi[2]], Nnumber)
+            if seq_qc == False:
+                umi_qc = False
+        ## 搜索barcode并进行质控
+        bn = 0
+        for barcode in barcode_list:
+            barcode_seq += aligned_seq[barcode[1]: barcode[1] + barcode[2]]
+            barcode_qual += aligned_qual[barcode[1]: barcode[1] + barcode[2]]
+            ## 检查barcode是否过多不清楚碱基
+            seq_qc = ErrorBaseCount(aligned_seq[barcode[1]: barcode[1] + barcode[2]], Nnumber)
+            ## 检查barcode是否在预设的barcode列表中
+            prefix_check = BarcodeCheck(aligned_seq[barcode[1]: barcode[1] + barcode[2]], barcode_prefix[bn+1], barcode_mismatch_number[bn])
+            if seq_qc == False or prefix_check == False:
+                barcode_qc = False
+            bn += 1
+        if not barcode_seq == '' and not umi_seq == '' and not barcode_qual == '' and not umi_qual == '' and umi_qc == True and barcode_qc == True:
+            return umi_seq, umi_qual, barcode_seq, barcode_qual
+        else:
+            return None
+    else:
+        return None
+## 主函数
+def main(fastq:str, module_seq:str, module_cigar:str, barcode_txt, anchor_mismatch:str, barcode_mismatch:str, range_fold:float, Nnumber:int, outdir:str, name:str):
+    ## 提示信息
+    hint_string = '\n\033[1;34m*** Input ***\33[0m\nFASTQ: %s\nBarcode list: %s\n\n' % (fastq, barcode_txt)
+    hint_string += '\033[1;34m*** Output ***\33[0m\nDirectory: %s\nPrefix name: %s\n\n' % (outdir, name)
+    hint_string += '\033[1;34m*** Options ***\33[0m\nModule sequence: %s\nModule cigar: %s\n' % (module_seq, module_cigar)
+    hint_string += 'Fold of searching anchor sequence: %s\n' % (str(range_fold))
+    hint_string += 'Allowed mismatches of anchor sequence: %s\nAllowed mismatches of barcode sequence: %s\n' % (anchor_mismatch, barcode_mismatch)
+    hint_string += 'Allowed number of ambiguous base: %s\n' % (str(Nnumber))
+    print(hint_string)
+    ## 读取barcode序列模式
+    module_split = ModuleSeqSplit(module_cigar, module_seq)
+    ## 读取预设的barcode
+    print('\n\033[1;32mWorking\33[0m: Read in presupposed barcode list')
+    barcode_number = len([x for x in module_split if x[0] == 'B'])
+    barcode_prefix = BarcodePrefix(barcode_txt, barcode_number)
+    ## 输出文件
+    barcode_umi_fastq = open(os.path.join(outdir, name + '.Barcode_UMI.fastq'), 'w')
+    no_barcode_read = open(os.path.join(outdir, name + '.Reads.NonBarcoded.txt'), 'w')
+    barcode_read = open(os.path.join(outdir, name + '.Reads.Barcoded.txt'), 'w')
+    summary = open(os.path.join(outdir, name + '.summary.txt'), 'w')
+    ## 无标签的序列数量
+    read_count, nonbar_count = 0, 0
+    ## 读取fastq
+    print('\n\033[1;32mWorking\33[0m: Read in FASTQ file')
+    infile = open(fastq, 'r')
+    ## 循环提取barcode
+    print('\n\033[1;32mWorking\33[0m: Start processing reads')
+    for line in infile:
+        if  read_count % 100000 == 0 and not read_count == 0:
+            print('\n\033[1;32mWorking\33[0m: Processed reads:  %s' % (read_count))
+        read_count += 1
+        tag = line.strip().strip('@')
+        seq = infile.readline().strip()
+        plus = infile.readline().strip()
+        qual = infile.readline().strip()
+        del plus
+        extract_result = BarcodeExtractAnchor(seq, qual, module_split, barcode_prefix, anchor_mismatch=anchor_mismatch, barcode_mismatch=barcode_mismatch, range_fold=range_fold, Nnumber=Nnumber)
+        if not extract_result == None:
+            barcode_read.write(tag + '\n')
+            umi_seq, umi_qual, barcode_seq, barcode_qual = extract_result[0], extract_result[1], extract_result[2], extract_result[3]
+            barcode_umi_fastq.write('@%s\n%s\n+\n%s\n' % (tag,  barcode_seq+umi_seq,  barcode_qual+umi_qual))
+        else:
+            no_barcode_read.write(tag + '\n')
+            nonbar_count +=1
+    print('\n\033[1;32mWorking\33[0m: Finished')
+    ## 输出summary.txt
+    summary.write('%s\nTotal Reads: %s\nNonBarcoded Reads Count: %s\nNonBarcoded Reads Ratio: %s\n' % (fastq, read_count, nonbar_count, str(round(nonbar_count / read_count * 100, 4)) + '%'))
+############################################################
+## 工作流程
+############################################################
+if (not module_seq == None) and (not module_cigar == None) and (not name == None):
+    main(fastq, module_seq, module_cigar, barcode_txt, anchor_mismatch, barcode_mismatch, range_fold, Nnumber, outdir, name)
+else:
+    print('Reiquired parameters missing')
+    sys.exit()

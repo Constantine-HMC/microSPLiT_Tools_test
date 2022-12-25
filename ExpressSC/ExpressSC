@@ -1,0 +1,216 @@
+#! /usr/bin/python3
+import sys
+import os
+import configparser
+# sys.path.append(os.path.abspath(sys.argv[0]))
+from optparse import OptionParser
+######################################################
+## 选项和参数
+######################################################
+## 用法
+print('\033[1;31;44mExpressSC\033[0m\n'
+      'version: test_0.0.1\nAuthor: Zhuochong Liu\n'
+      'Description: Used to count the reads mapped to gene features of each cell from FASTQ file processed by BarcodeExtract.\n\n'
+      'Reminding:\n'
+      '    The reference genome and annotation file(gff3 file) should be indexd by aligner "STAR" in advance.\n')
+usage = "Usage: %prog [options] R1_READS R2_READS R1_BARCODE R2_BARCODE CONFIG REF_DIR GFF\n" \
+        "Result files:\n" \
+        "    Barcode.fastq              Fastq 1 of pair-end fastq, containing UMI and barcode sequence.\n" \
+        "    Reads.fastq                Fastq 2 of pair-end fastq, containing cDNA fragment.\n" \
+        "    counts.tsv                 Read count mapped to gene features per gene and per cell.\n" \
+        "    *.bam(.bai)                Intermediate BAM file.\n"
+## 版本
+parser = OptionParser(usage=usage)
+## 个性化选项
+parser.add_option('-b', default=None, type="string", action="store", dest="pattern", metavar='string',
+                    help='Required, sequence of "Barcode Module", use "C" for barcode and "N" for UMI, for example, "CCCCCCCCCCCCCCCCCCCCCNNNNNNN", deafult = None.')
+parser.add_option('-c', default=None, type="int", action="store", dest="celln", metavar='int',
+                    help='Required, prefer cell number, deafult = 500.')
+parser.add_option('-o', default=None, type="string", action="store", dest='outputdir', metavar='path',
+                    help='Required, absolute path of output directory, deafult = None.')
+parser.add_option('-s', default=None, type="string", action="store", dest='seqtk', metavar='path',
+                    help='Required, callable path of "seqtk", deafult = None.')
+parser.add_option('-u', default=None, type="string", action="store", dest='umi_tools', metavar='path',
+                    help='Required, callable path of "umi_tools", deafult = None.')
+parser.add_option('-a', default=None, type="string", action="store", dest='star', metavar='path',
+                    help='Required, callable path of "STAR", deafult = None.')
+parser.add_option('-m', default=None, type="string", action="store", dest='samtools', metavar='path',
+                    help='Required, callable path of "samtools", deafult = None.')
+parser.add_option('-f', default=None, type="string", action="store", dest='feature', metavar='path',
+                    help='Required, callable path of "featureCounts", deafult = None.')
+## 解析输入的选项
+(options, args) = parser.parse_args()
+barcode_module = options.pattern
+celln = options.celln
+outdir = os.path.abspath(options.outputdir)
+seqtk =  options.seqtk
+umi_tools = options.umi_tools
+star = options.star
+samtools = options.samtools
+feature = options.feature
+########################################################
+# 检查输入路径
+########################################################
+if not len(args) == 7:
+    print('Wrong number of input file')
+    sys.exit()
+rfq1, rfq2, bfq1, bfq2, conftxt, refdir, gff = os.path.abspath(args[0]), os.path.abspath(args[1]), os.path.abspath(args[2]), os.path.abspath(args[3]), os.path.abspath(args[4]), os.path.abspath(args[5]), os.path.abspath(args[6])
+if not (os.path.isfile(rfq1) and os.path.isfile(rfq2) and os.path.isfile(bfq1) and os.path.isfile(bfq2) and os.path.isfile(conftxt) and os.path.isdir(refdir) and os.path.isfile(gff)):
+    print('The input file does not exist!')
+    sys.exit()
+#########################################################
+## 检查输出路径
+#########################################################
+if not os.path.isdir(outdir):
+    print('The output directory does not exist!')
+    sys.exit()
+#########################################################
+## 函数定义
+#########################################################
+## 读取参数文件
+def ReadConf(conftxt):
+    abs_path = os.path.abspath(conftxt)
+    if not os.path.isfile(abs_path):
+        raise FileNotFoundError('No such file: config: %s' % (abs_path))
+    else:
+        myconf = configparser.ConfigParser(strict=False)
+        myconf.optionxform = str
+        myconf.read(abs_path)
+        return myconf
+## 提取read tag
+def ExtractReadName(fq:str, outdir:str, source:str):
+    tag_txt = os.path.join(outdir, source + '.tag.txt')
+    with open(fq, 'r') as infile:
+        with open(tag_txt, 'w') as outfile:
+            for line in infile:
+                tag = line.strip().strip('@').split(' ')[0]
+                seq = infile.readline()
+                plus = infile.readline()
+                qual = infile.readline()
+                del seq, plus, qual
+                outfile.write(tag+'\n')
+    return tag_txt
+## 从一对fastq中获取配对的read tag，并从提取出来成对的reads
+def FindReadsPair(fq1:str, fq2:str, outdir:str, name:str, seqtk:str):
+    ## 提取fq1的read tag
+    fq1_tag_txt = ExtractReadName(fq1, outdir, name+'.Barcode')
+    ## 从fq2中提取与R1配对的read输出为fastq
+    fq2_pair_fq = os.path.join(outdir, name+'.Reads.pair.fastq')
+    os.system('%s subseq %s %s > %s' % (seqtk, fq2, fq1_tag_txt, fq2_pair_fq))
+    ## 从fq2_pair_fq中提取pair read的tag
+    pair_tag_txt = ExtractReadName(fq2_pair_fq, outdir, name+'.Pair')
+    ## 从fq1中提取配对的read输出为fastq
+    fq1_pair_fq = os.path.join(outdir, name+'Barcode.pair.fastq')
+    os.system('%s subseq %s %s > %s' % (seqtk, fq1, pair_tag_txt, fq1_pair_fq))
+    os.system('rm -rf %s %s' % (fq1_tag_txt, pair_tag_txt))
+    return fq1_pair_fq, fq2_pair_fq
+## 为软件运行的命令行添加参数
+def join_parameter(cmd_head, parameters):
+    parameter_str = ''
+    for parameter in parameters:
+        pl = parameters[parameter].strip().split(':')
+        if pl[0].strip() == 's':
+            parameter_str += '-' + parameter + ' ' + pl[1].strip().replace('TF','') + ' '
+        elif pl[0].strip() == 'a':
+            parameter_str += '--' + parameter + ' ' + pl[1].strip().replace('TF','') + ' '
+        elif pl[0].strip() == 'e':
+            parameter_str += parameter + '=' + pl[1].strip().replace('TF','') + ' '
+        else:
+            raise TypeError('Wrong parameter type: %s: %s' % (cmd_head, parameter))
+    return parameter_str
+## 提取细胞白名单
+def WhiteList(umi_tools:str, barcode_fq:str, barcode_module:str, celln:int, outdir:str, myconf):
+    whitelist = os.path.join(outdir, 'whitelist.txt')
+    cmd = '%s whitelist --stdin %s --bc-pattern=%s --set-cell-number %s -S %s ' % (umi_tools, barcode_fq, barcode_module, celln, whitelist)
+    if 'whitelist' in myconf:
+        cmd += join_parameter('umi_tools whitelist', myconf['whitelist'])
+    return cmd, whitelist
+## 提取barcode和UMI到Reads.fastq
+def Extract(umi_tools:str, barcode_fq:str, reads_fq:str, barcode_module:str, whitelist:str, outdir:str, myconf):
+    ebarcode_fq, ereads_fq = os.path.join(outdir,'Barcode.extrcted.fastq'), os.path.join(outdir,'Reads.extrcted.fastq')
+    cmd = '%s extract --bc-pattern=%s --stdin %s --stdout %s --read2-in %s --read2-out %s --whitelist=%s ' % (umi_tools, barcode_module, barcode_fq, ebarcode_fq, reads_fq, ereads_fq, whitelist)
+    if 'extract' in myconf:
+        cmd += join_parameter('umi_tools extract', myconf['extract'])
+    return cmd, ebarcode_fq, ereads_fq
+## 比对至参考基因组
+def STARmap(refdir:str, fq:str, star:str, star_dir:str, myconf):
+    star_prefix = os.path.join(star_dir, 'Reads.')
+    star_bam = star_prefix+'Aligned.sortedByCoord.out.bam'
+    cmd = '%s --genomeDir %s --readFilesIn %s --outSAMtype BAM SortedByCoordinate --outFileNamePrefix %s ' % (star, refdir, fq, star_prefix)
+    if 'map' in myconf:
+        cmd += join_parameter('star map', myconf['map'])
+    return cmd, star_bam
+## featureCounts标记可用于特征计算的reads
+def FeatureCounts(gff:str, outdir:str, bam:str, feature:str, myconf):
+    sf_bam = bam+'.featureCounts.bam'
+    assigned = os.path.join(outdir, 'gene_assigned')
+    cmd = '%s -a %s -o %s -R BAM ' % (feature, gff, assigned)
+    if 'feature' in myconf:
+        cmd += join_parameter('featureCounts', myconf['feature'])
+    cmd += ' %s' % (bam)
+    return cmd, sf_bam, assigned
+## 排序BAM文件
+def Sort(outdir:str, bam:str, samtools:str, myconf):
+    sfs_bam = os.path.join(outdir,'STAR.feature.sorted.bam')
+    cmd = '%s sort ' % (samtools)
+    if 'sort' in myconf:
+        cmd += join_parameter('samtools sort', myconf['sort'])
+    cmd += ' %s > %s &&' % (bam, sfs_bam)
+    cmd += '%s index ' % (samtools)
+    if 'index' in myconf:
+        cmd += join_parameter('samtools index', myconf['index'])
+    cmd += ' %s' % (sfs_bam)
+    return cmd, sfs_bam
+def Count(outdir:str, bam:str, umi_tools:str, myconf):
+    count_csv = os.path.join(outdir, 'counts.tsv')
+    cmd = '%s count --per-gene --gene-tag=XT --assigned-status-tag=XS --per-cell -I %s -S %s ' % (umi_tools, bam, count_csv)
+    if 'count' in myconf:
+        cmd += join_parameter('umi_tools count', myconf['count'])
+    return cmd, count_csv
+## 主函数
+def main(rfq1:str, rfq2:str, bfq1:str, bfq2:str, conftxt:str, refdir:str, gff:str, outdir:str, barcode_module:str, celln:int, seqtk:str, umi_tools:str):
+    myconf = ReadConf(conftxt)
+    R12_barcode_fq, R12_reads_fq = FindReadsPair(bfq1, rfq2, outdir, 'R12', seqtk)
+    R21_barcode_fq, R21_reads_fq = FindReadsPair(bfq2, rfq1, outdir, 'R21', seqtk)
+    barcode_fq = os.path.join(outdir, 'Barcode.fastq')
+    reads_fq = os.path.join(outdir, 'Reads.fastq')
+    os.system('cat %s > %s' % (R12_barcode_fq, barcode_fq))
+    os.system('cat %s >> %s' % (R21_barcode_fq, barcode_fq))
+    os.system('cat %s > %s' % (R12_reads_fq, reads_fq))
+    os.system('cat %s >> %s' % (R21_reads_fq, reads_fq))
+    os.system('rm -rf %s %s %s %s' % (R12_barcode_fq, R12_reads_fq, R21_barcode_fq, R21_reads_fq))
+    whitelist_cmd, whitelist = WhiteList(umi_tools, barcode_fq, barcode_module, celln, outdir, myconf)
+    os.system(whitelist_cmd)
+    extract_cmd, ebarcode_fq, ereads_fq = Extract(umi_tools, barcode_fq, reads_fq, barcode_module, whitelist, outdir, myconf)
+    os.system(extract_cmd)
+    star_dir = os.path.join(outdir, 'star')
+    if not os.path.isdir(star_dir):
+        os.mkdir(star_dir)
+    os.system('rm -rf %s/*' % (star_dir))
+    star_cmd, star_bam = STARmap(refdir, ereads_fq, star, star_dir, myconf)
+    os.system(star_cmd)
+    star_bamx= os.path.join(outdir, 'STAR.bam')
+    os.system('cp %s %s' % (star_bam, star_bamx))
+    os.system('rm -rf %s' % (star_dir))
+    star_bam = star_bamx
+    feature_cmd, sf_bam, assigned = FeatureCounts(gff, outdir, star_bam, feature, myconf)
+    os.system(feature_cmd)
+    sf_bamx = os.path.join(outdir, 'STAR.feature.bam')
+    os.system('mv %s %s' % (sf_bam, sf_bamx))
+    sf_bam = sf_bamx
+    del star_bamx, sf_bamx
+    os.system('rm -rf %s %s %s %s' % (assigned, assigned+'.summary', reads_fq, barcode_fq))
+    os.system('mv %s %s' % (ebarcode_fq, barcode_fq))
+    os.system('mv %s %s' % (ereads_fq, reads_fq))
+    sort_cmd, sfs_bam = Sort(outdir, sf_bam, samtools, myconf)
+    os.system(sort_cmd)
+    count_cmd, count_csv = Count(outdir, sfs_bam, umi_tools, myconf)
+    os.system(count_cmd)
+#########################################################
+## 工作流程
+#########################################################
+if (not refdir == None) and (not gff == None) and (not outdir == None) and (not seqtk == None) and (not umi_tools == None) and (not star == None) and (not feature == None):
+    main(rfq1, rfq2, bfq1, bfq2, conftxt, refdir, gff, outdir, barcode_module, celln, seqtk, umi_tools)
+else:
+    print('Reiquired parameters missing')
+    sys.exit()

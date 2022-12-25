@@ -1,0 +1,18 @@
+### Mapping by STAR
+[map]
+runThreadN = a: 10
+outFilterMultimapNmax = a: 1
+
+## FeatureCounts
+[feature]
+t = s: gene
+g = s: Name
+T = s: 4
+
+## Sorting BAM file by samtools
+[sort]
+threads = a: 10
+
+## Indexing BAM file by samtools
+[index]
+@ = s: 10
